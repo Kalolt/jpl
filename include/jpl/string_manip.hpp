@@ -3,24 +3,47 @@
 
 #include <cstring>
 #include <string>
+#include <string_view>
+
 #include <jpl/vector.hpp>
 #include <jpl/bits/invoke.hpp>
 
 namespace jpl {
 
-template<class T> requires(::std::same_as<T, ::std::string> || ::std::same_as<T, ::std::string_view>)
-[[nodiscard]] inline ::std::string concat(const ::jpl::vector<T>& strs, ::std::string_view separator = ::std::string_view{ "" }) {
-	if (strs.size() == 0) return "";
+template<class T> requires(range_of<T, ::std::string, ::std::string_view>)
+[[nodiscard]] inline ::std::string concat(const T& strs) {
+	::size_t str_len{ 0 };
+	for (const auto& str : strs)
+		str_len += str.size();
+	if (str_len == 0) [[unlikely]]
+		return {};
 
-	::size_t size{ 0 };
-	for (const auto str : strs)
-		size += str.size();
-	size += (strs.size() - 1) * separator.size();
-
-	::std::string res( size, '\0' );
+	::std::string res( str_len, '\0' );
 	char* start = res.data();
-	char* end   = res.data() + res.size();
-	for (const auto str : strs) {
+	for (const auto& str : strs) {
+		::memcpy(start, str.data(), str.size());
+		start += str.size();
+	}
+
+	return res;
+}
+
+template<class T> requires(range_of<T, ::std::string, ::std::string_view>)
+[[nodiscard]] inline ::std::string concat(const T& strs, ::std::string_view separator) {
+	::size_t str_len{ 0 };
+	::size_t n_strs{ 0 };
+	for (const auto& str : strs) {
+		str_len += str.size();
+		n_strs++;
+	}
+	if (n_strs == 0) [[unlikely]]
+		return {};
+	str_len += (n_strs - 1) * separator.size();
+
+	::std::string res( str_len, '\0' );
+	char* start = res.data();
+	const char* const end = res.data() + res.size();
+	for (const auto& str : strs) {
 		::memcpy(start, str.data(), str.size());
 		start += str.size();
 		if (start != end) {
@@ -32,36 +55,39 @@ template<class T> requires(::std::same_as<T, ::std::string> || ::std::same_as<T,
 	return res;
 }
 
+template<class T> requires(not_range_of<T, ::std::string, ::std::string_view> && non_dangling_range<T>)
+[[nodiscard]] inline ::std::string concat(const T& strs) {
+	return concat(::jpl::vector<::std::string_view, 32>{ strs });
+}
+template<class T> requires(not_range_of<T, ::std::string, ::std::string_view> && non_dangling_range<T>)
+[[nodiscard]] inline ::std::string concat(const T& strs, ::std::string_view separator) {
+	return concat(::jpl::vector<::std::string_view, 32>{ strs }, separator);
+}
+template<class T> requires(non_dangling_range<T>)
+[[nodiscard]] inline ::std::string concat(const T& range, const projection<T, std::string_view> auto& project) {
+	return concat(::jpl::vector<::std::string_view, 32>{ range, project });
+}
+template<class T> requires(non_dangling_range<T>)
+[[nodiscard]] inline ::std::string concat(const T& range, const projection<T, std::string_view> auto& project, ::std::string_view separator) {
+	return concat(::jpl::vector<::std::string_view, 32>{ range, project }, separator);
+}
+
+// std::initializer_list has special template argument deduction rules, so it needs to be handled separately
+template<class T> requires convertible<T, std::string_view>
+[[nodiscard]] inline ::std::string concat(const ::std::initializer_list<T>& strs) {
+	return concat(::jpl::vector<::std::string_view, 32>{ strs });
+}
+template<class T> requires convertible<T, std::string_view>
+[[nodiscard]] inline ::std::string concat(const ::std::initializer_list<T>& strs, ::std::string_view separator) {
+	return concat(::jpl::vector<::std::string_view, 32>{ strs }, separator);
+}
 template<class T>
-[[nodiscard]] inline ::std::string concat(const T& strs, ::std::string_view separator = ::std::string_view{ "" }) {
-	::jpl::vector<::std::string_view> str_views;
-	for (auto& str : strs)
-		str_views.emplace_back(str);
-	return concat(str_views, separator);
+[[nodiscard]] inline ::std::string concat(const ::std::initializer_list<T>& strs, const projection<T, std::string_view> auto& project) {
+	return concat(::jpl::vector<::std::string_view, 32>{ strs, project });
 }
-
-template<class T, class Proj = ::std::string_view(*)(const typename T::value_type&)>
-[[nodiscard]] inline ::std::string concat(const T& strs, const Proj& projection, ::std::string_view separator = ::std::string_view{ "" }) {
-	::jpl::vector<::std::string_view> str_views;
-	for (auto& str : strs)
-		str_views.emplace_back(jpl::invoke(projection, str));
-	return concat(str_views, separator);
-}
-
 template<class T>
-[[nodiscard]] inline ::std::string concat(const ::std::initializer_list<T>& strs, ::std::string_view separator = ::std::string_view{ "" }) {
-	::jpl::vector<::std::string_view> str_views;
-	for (auto& str : strs)
-		str_views.emplace_back(str);
-	return concat(str_views, separator);
-}
-
-template<class T, class Proj = ::std::string_view(*)(const typename T::value_type&)>
-[[nodiscard]] inline ::std::string concat(const ::std::initializer_list<T>& strs, const Proj& projection, ::std::string_view separator = ::std::string_view{ "" }) {
-	::jpl::vector<::std::string_view> str_views;
-	for (auto& str : strs)
-		str_views.emplace_back(jpl::invoke(projection, str));
-	return concat(str_views, separator);
+[[nodiscard]] inline ::std::string concat(const ::std::initializer_list<T>& strs, const projection<T, std::string_view> auto& project, ::std::string_view separator) {
+	return concat(::jpl::vector<::std::string_view, 32>{ strs, project }, separator);
 }
 
 [[nodiscard]] inline ::size_t count_matches(::std::string_view str, ::std::string_view substr) {
@@ -173,16 +199,27 @@ inline void replace_all(::std::string& input, ::std::string_view match_str, ::st
 }
 
 inline void trim_front(::std::string_view& str, ::std::string_view what = ::std::string_view{ " \t\n\r" }) {
-	if (auto pos = str.find_first_not_of(what); pos != ::std::string_view::npos)
-		str.remove_prefix(pos);
+	str.remove_prefix(::std::min(str.find_first_not_of(what), str.size()));
+}
+
+inline void trim_front(::std::string& str, ::std::string_view what = ::std::string_view{ " \t\n\r" }) {
+	str.erase(0, str.find_first_not_of(what));
 }
 
 inline void trim_back(::std::string_view& str, ::std::string_view what = ::std::string_view{ " \t\n\r" }) {
-	if (auto pos = str.find_last_not_of(what); pos != ::std::string_view::npos)
-		str.remove_suffix(str.size() - pos - 1);
+	str.remove_suffix(str.size() - std::min(str.find_last_not_of(what) + 1, str.size()));
+}
+
+inline void trim_back(::std::string& str, ::std::string_view what = ::std::string_view{ " \t\n\r" }) {
+	str.erase(str.find_last_not_of(what) + 1);
 }
 
 inline void trim(::std::string_view& str, ::std::string_view what = ::std::string_view{ " \t\n\r" }) {
+	trim_front(str, what);
+	trim_back (str, what);
+}
+
+inline void trim(::std::string& str, ::std::string_view what = ::std::string_view{ " \t\n\r" }) {
 	trim_front(str, what);
 	trim_back (str, what);
 }

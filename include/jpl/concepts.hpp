@@ -5,8 +5,10 @@
 #include <cstddef> // ::std::byte
 #include <concepts>
 
+#include <jpl/bits/invoke.hpp>
+
 // Include a quickly compiling header that contains std::begin and std::end for ADL trick.
-// On GCC <iterator> compiles slow and all containers fast, whereas on Clang it's the opposite,
+// On GCC <iterator> compiles slow and <span> fast, whereas on Clang it's the opposite,
 // so select based on compiler.
 #ifdef __llvm__
 #include <iterator>
@@ -34,10 +36,14 @@ concept can_reduce = requires(T t, U u) { t - u; };
 template<class From, class To>
 concept convertible = ::std::is_convertible_v<From, To>;
 
+template<class T>
+concept lval_ref = ::std::is_lvalue_reference_v<T>;
+
 using ::std::begin;
 using ::std::end;
 using ::std::rbegin;
 using ::std::rend;
+using ::std::size;
 
 template<class T>
 concept range = requires(T& t) {
@@ -46,20 +52,50 @@ concept range = requires(T& t) {
 };
 
 template<class T>
+concept sized_range = range<T> && requires(T& t) {
+	size(t);
+};
+
+template<class T>
+concept non_dangling_range = range<T> && requires(T& t) {
+	{ *begin(t) } -> lval_ref;
+};
+
+template<class T, class ... Args>
+concept range_of = range<T> && requires(T& t) {
+	requires (std::same_as<std::remove_cvref_t<decltype(*begin(t))>, std::remove_cvref_t<Args>> || ...);
+};
+
+template<class T, class ... Args>
+concept not_range_of = range<T> && requires(T& t) {
+	requires !(std::same_as<std::remove_reference_t<decltype(*begin(t))>, Args> || ...);
+};
+
+template<class T, class U>
+concept sized_range_of = sized_range<T> && requires(T& t) {
+	requires std::same_as<std::remove_reference_t<decltype(*begin(t))>, U>;
+};
+
+template<class T>
 concept reversible_range = requires(T& t) {
 	rbegin(t);
 	rend  (t);
 };
 
-template<class T, class U>
-concept convertible_range = requires(T& t) {
-	U{ *begin(t) };
-	U{ *end  (t) };
+template<class T, class ... Args>
+concept constructible_from = requires(Args&& ... args) {
+	T{ static_cast<Args&&>(args)... };
+};
+
+template<class U, class T>
+concept can_construct = requires(U&& u) {
+	T{ static_cast<U&&>(u) };
 };
 
 template<class T, class U>
-concept constructible = requires(U&& u) {
-	T{ static_cast<U&&>(u) };
+concept convertible_range = requires(T& t) {
+	{ *begin(t) } -> can_construct<U>;
+	{ end(t) };
 };
 
 template<class T>
@@ -79,6 +115,11 @@ concept container = requires(T& t) {
 
 template<class T>
 concept integral = ::std::is_integral_v<T>;
+
+template<class F, class Range, class To>
+concept projection = requires(Range& range, F& f) {
+	{ ::jpl::invoke(f, *begin(range)) } -> convertible<To>;
+};
 
 } // namespace jpl
 
