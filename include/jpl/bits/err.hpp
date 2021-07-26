@@ -9,8 +9,9 @@
 
 namespace jpl::err {
 
-[[noreturn]] JPL_INLINE void open(const char* path);
+[[noreturn]] JPL_INLINE void generic(const char* path);
 [[noreturn]] JPL_INLINE void std(const char* path);
+[[noreturn]] JPL_INLINE void open(const char* path);
 [[noreturn]] JPL_INLINE void mmap();
 [[noreturn]] JPL_INLINE void archive(const char* what, const char* errstr);
 
