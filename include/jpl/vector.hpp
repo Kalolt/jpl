@@ -5,12 +5,12 @@
 #include <jpl/bits/trivially_relocatable.hpp>
 #include <jpl/concepts.hpp>
 
+#include <cassert>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <new>
 #include <type_traits>
-#include <cassert>
 
 // libstdc++'s <iterator> header is insanely bloated, so use internal lighter headers.
 #if __has_include(<bits/stl_iterator_base_types.h>) && __has_include(<bits/stl_iterator.h>)
@@ -28,23 +28,6 @@ namespace jpl {
 inline constexpr class list_token_t{} list;
 inline constexpr class capacity_t{}   capacity;
 inline constexpr class sic_t{}        sic;
-
-namespace detail {
-template<class value_type, ::size_t sbo_size>
-union vector_union {
-	constexpr vector_union() noexcept {}
-	constexpr ~vector_union() noexcept {}
-	value_type sbo_[sbo_size];
-	value_type* end_;
-};
-template<class value_type>
-union vector_union<value_type, 0> {
-	constexpr vector_union() noexcept {}
-	constexpr ~vector_union() noexcept {}
-	value_type* end_;
-};
-
-} // namespace detail
 
 template<class T, ::size_t sbo_size_ = 0, ::jpl::allocator A = ::jpl::default_allocator<T>>
 class vector {
@@ -105,9 +88,7 @@ class vector {
 			while (end_ != beg_ + n)
 				::new (end_++) T;
 		} catch (...) {
-			end_--;
-			while (end_ != beg_)
-				(--end_)->~T();
+			unwind_ctor();
 			throw;
 		}
 		if (!is_sbo_active()) data_.end_ = beg_ + n;
@@ -127,9 +108,7 @@ class vector {
 			while (end_ != beg_ + n)
 				::new (end_++) T{ gen() };
 		} catch (...) {
-			end_--;
-			while (end_ != beg_)
-				(--end_)->~T();
+			unwind_ctor();
 			throw;
 		}
 		if (!is_sbo_active()) data_.end_ = beg_ + n;
@@ -140,40 +119,24 @@ class vector {
 		: beg_{ allocate(n) }, end_{ beg_ }
 	{
 		try {
-			for (::size_t i = 0; i < n; i++)
+			for (::size_t i = 0; i != n; ++i)
 				::new (end_++) T{ gen(i) };
 		} catch (...) {
-			end_--;
-			while (end_ != beg_)
-				(--end_)->~T();
+			unwind_ctor();
 			throw;
 		}
 		if (!is_sbo_active()) data_.end_ = beg_ + n;
 	}
 
-	vector(size_type n, copy_t base)
+	vector(size_type n, const auto& base)
 		: beg_{ allocate(n) }, end_{ beg_ }
 	{
-		if constexpr (is_trivial && (sizeof(T) == 1)) {
-			if constexpr (::std::is_same_v<unsigned char, T> || ::std::is_same_v<char, T>) {
-				::memset(beg_, base, n);
-			} else {
-				// This is for types like std::byte and wrappers around 1 byte types
-				unsigned char c;
-				::memcpy(&c, &base, 1);
-				::memset(beg_, c, n);
-			}
-			end_ = beg_ + n;
-		} else {
-			try {
-				while (end_ != beg_ + n)
-					::new (end_++) T{ base };
-			} catch (...) {
-				end_--;
-				while (end_ != beg_)
-					(--end_)->~T();
-				throw;
-			}
+		try {
+			while (end_ != beg_ + n)
+				::new (end_++) T{ base };
+		} catch (...) {
+			unwind_ctor();
+			throw;
 		}
 		if (!is_sbo_active()) data_.end_ = beg_ + n;
 	}
@@ -182,38 +145,34 @@ class vector {
 	vector(list_token_t, Args&& ... args)
 		: beg_{ allocate(sizeof...(args)) }, end_{ beg_ }
 	{
+		if (!is_sbo_active()) data_.end_ = beg_ + sizeof...(args);
 		try {
 			(::new (end_++) T{ static_cast<Args&&>(args) }, ...);
 		} catch (...) {
-			end_--;
-			while (end_ != beg_)
-				(--end_)->~T();
+			unwind_ctor();
 			throw;
 		}
-		if (!is_sbo_active()) data_.end_ = end_;
 	}
 
 	vector(const vector& other) requires(!is_trivial)
 		: beg_{ allocate(other.size()) }, end_{ beg_ }
 	{
+		if (!is_sbo_active()) data_.end_ = beg_ + other.size();
 		try {
 			for (const_iterator it = other.cbegin(); it != other.cend(); ++it)
 				::new (end_++) T{ *it };
 		} catch (...) {
-			end_--;
-			while (end_ != beg_)
-				(--end_)->~T();
+			unwind_ctor();
 			throw;
 		}
-		if (!is_sbo_active()) data_.end_ = end_;
 	};
 
 	vector(const vector& other) requires(is_trivial)
 		: beg_{ allocate(other.size()) }, end_{ beg_ + other.size() }
 	{
+		if (!is_sbo_active()) data_.end_ = beg_ + other.size();
 		if (other.beg_)
 			::memcpy(beg_, other.beg_, other.size_bytes());
-		if (!is_sbo_active()) data_.end_ = end_;
 	};
 
 	// Hide implicits to use generic versions of these
@@ -225,10 +184,11 @@ class vector {
 	// This also handles copy-construction from another ::jpl::vector.
 	// TODO: using memcpy for trivial types could potentially make this faster, but implementing it is a mess,
 	// because the other range needs to be contiguous, and ::std::contiguous_iterator_tag seems to be used inconsistently.
-	template<class U> requires (convertible_range<U, value_type>)
+	template<class U> requires (convertible_range<U, value_type> && requires(U u){ u.size(); })
 	vector(U&& range)
 		: beg_{ allocate(range.size()) }, end_{ beg_ }
 	{
+		if (!is_sbo_active()) data_.end_ = beg_ + range.size();
 		try {
 			for (auto it = range.begin(); it != range.end(); ++it) {
 				if constexpr (::std::is_rvalue_reference_v<U>)
@@ -237,12 +197,65 @@ class vector {
 					::new (end_++) T{ *it };
 			}
 		} catch (...) {
-			end_--;
-			while (end_ != beg_)
-				(--end_)->~T();
+			unwind_ctor();
 			throw;
 		}
-		if (!is_sbo_active()) data_.end_ = end_;
+	}
+
+	template<class U> requires (convertible_range<U, value_type> && requires(U u){ u.size(); })
+	vector(U&& range, const projection<U, T> auto& project)
+		: beg_{ allocate(range.size()) }, end_{ beg_ }
+	{
+		if (!is_sbo_active()) data_.end_ = beg_ + range.size();
+		try {
+			for (auto it = range.begin(); it != range.end(); ++it) {
+				if constexpr (::std::is_rvalue_reference_v<U>)
+					::new (end_++) T{ invoke(project, static_cast<::std::remove_reference_t<decltype(*it)>&&>(*it)) };
+				else
+					::new (end_++) T{ invoke(project, *it) };
+			}
+		} catch (...) {
+			unwind_ctor();
+			throw;
+		}
+	}
+
+	// If range doesn't have a known size (input iterator), start with no size and grow as needed
+	template<class U> requires (convertible_range<U, value_type> && !requires(U u){ u.size(); })
+	vector(U&& range)
+		: beg_{ nullptr }, end_{ nullptr }
+	{
+		if (!is_sbo_active()) data_.end_ = nullptr;
+		try {
+			for (auto it = range.begin(); it != range.end(); ++it) {
+				grow_if_full();
+				if constexpr (::std::is_rvalue_reference_v<U>)
+					::new (end_++) T{ static_cast<::std::remove_reference_t<decltype(*it)>&&>(*it) };
+				else
+					::new (end_++) T{ *it };
+			}
+		} catch (...) {
+			unwind_ctor();
+			throw;
+		}
+	}
+	template<class U> requires (convertible_range<U, value_type> && !requires(U u){ u.size(); })
+	vector(U&& range, const projection<U, T> auto& project)
+		: beg_{ nullptr }, end_{ nullptr }
+	{
+		if (!is_sbo_active()) data_.end_ = nullptr;
+		try {
+			for (auto it = range.begin(); it != range.end(); ++it) {
+				grow_if_full();
+				if constexpr (::std::is_rvalue_reference_v<U>)
+					::new (end_++) T{ invoke(project, static_cast<::std::remove_reference_t<decltype(*it)>&&>(*it)) };
+				else
+					::new (end_++) T{ invoke(project, *it) };
+			}
+		} catch (...) {
+			unwind_ctor();
+			throw;
+		}
 	}
 
 	// Move from another ::jpl::vector.
@@ -265,9 +278,7 @@ class vector {
 					}
 					other.end_ = other.beg_;
 				} catch (...) {
-					end_--;
-					while (end_ != beg_)
-						(--end_)->~T();
+					unwind_ctor();
 					throw;
 				}
 			}
@@ -286,16 +297,20 @@ class vector {
 	vector& operator=(const vector_other<sbo>& other) {
 		const size_type n{ other.size() };
 		if (n > capacity()) {
+			// Allocate first, so that if allocation fails, vector is still in valid state
+			T* new_buffer = alloc.allocate(n);
 			dtor_range(beg_, end_);
-			if (!is_sbo_active()) alloc.deallocate(beg_, capacity() * sizeof(T));
-			end_ = beg_ = static_cast<T*>(alloc.allocate(n * sizeof(T)));
+			if (!is_sbo_active()) alloc.deallocate(beg_, capacity());
+			end_ = beg_ = new_buffer;
 			if constexpr (is_trivial) {
 				::memcpy(beg_, other.beg_, other.size_bytes());
 				end_ = beg_ + other.size();
 			} else {
 				const_iterator it{ other.cbegin() };
-				while (it != other.cend())
-					::new (end_++) T{ *it++ };
+				while (it != other.cend()) {
+					::new (end_) T{ *it++ };
+					end_++; // increment later in case of an exception
+				}
 			}
 			data_.end_ = end_;
 		} else if (n > size()) {
@@ -304,9 +319,10 @@ class vector {
 			T* dst = beg_;
 			while (src != end)
 				*dst++ = *src++;
-			const_iterator it{ other.cbegin() + size() };
-			while (it != other.cend())
-				::new (end_++) T{ *it++ };
+			while (src != other.cend()) {
+				::new (end_) T{ *src++ };
+				end_++; // increment later in case of an exception
+			}
 		} else {
 			dtor_range(beg_ + n, end_);
 			const T* src = other.cbegin();
@@ -320,27 +336,31 @@ class vector {
 	}
 
 	template<::size_t sbo>
-	vector& operator=(vector_other<sbo>&& other) noexcept(sbo == 0) {
+	vector& operator=(vector_other<sbo>&& other) noexcept(sbo <= sbo_size) {
 		if (other.is_sbo_active()) {
 			const size_type n{ other.size() };
 			if (n > capacity()) {
+				T* new_buffer = alloc.allocate(n);
 				dtor_range(beg_, end_);
-				if (!is_sbo_active()) alloc.deallocate(beg_, capacity() * sizeof(T));
-				end_ = beg_ = static_cast<T*>(alloc.allocate(n * sizeof(T)));
+				if (!is_sbo_active()) alloc.deallocate(beg_, capacity());
+				end_ = beg_ = new_buffer;
+				// TODO: I think there should be a try-block here
 				for (iterator it{ other.beg_ }; it != other.end_;) {
-					::new (end_++) T{ static_cast<T&&>(*it) };
+					::new (end_) T{ static_cast<T&&>(*it) };
+					end_++;
 					(it++)->~T();
 				}
 				other.end_ = other.beg_;
-				if (!is_sbo_active()) data_.end_ = end_;
+				if (!is_sbo_active()) data_.end_ = beg_ + n;
 			} else if (n > size()) {
 				iterator it = other.begin();
-				for (iterator val = beg_; val != end_; val++) {
+				for (iterator val = beg_; val != end_; ++val) {
 					*val = static_cast<T&&>(*it);
 					(it++)->~T();
 				}
 				while (it != other.cend()) {
-					::new (end_++) T{ static_cast<T&&>(*it) };
+					::new (end_) T{ static_cast<T&&>(*it) };
+					end_++;
 					(it++)->~T();
 				}
 				other.end_ = other.beg_;
@@ -354,7 +374,7 @@ class vector {
 			}
 		} else {
 			dtor_range(beg_, end_);
-			if (!is_sbo_active()) alloc.deallocate(beg_, capacity() * sizeof(T));
+			if (!is_sbo_active()) alloc.deallocate(beg_, capacity());
 			beg_ = other.beg_;
 			end_ = other.end_;
 			data_.end_ = other.data_.end_;
@@ -366,12 +386,12 @@ class vector {
 	}
 
 	~vector() noexcept(noexcept(::std::declval<T>().~T())) {
+		if (!beg_) return;
+		dtor_range(beg_, end_);
 		if constexpr (sbo_size == 0) {
-			dtor_range(beg_, end_);
-			alloc.deallocate(beg_, capacity() * sizeof(T));
+			alloc.deallocate(beg_, capacity());
 		} else {
-			dtor_range(beg_, end_);
-			if (!is_sbo_active()) alloc.deallocate(beg_, capacity() * sizeof(T));
+			if (!is_sbo_active()) alloc.deallocate(beg_, capacity());
 		}
 	}
 
@@ -405,7 +425,7 @@ class vector {
 	[[nodiscard]] ::size_t size_bytes() const noexcept { return size() * sizeof(value_type); }
 	[[nodiscard]] ::size_t capacity()   const noexcept { return is_sbo_active() ? sbo_size : (data_.end_ - beg_); }
 
-	vector& clear() noexcept(noexcept(::std::declval<T>().~T())) {
+	vector& clear() noexcept {
 		dtor_range(beg_, end_);
 		end_ = beg_;
 		return *this;
@@ -416,9 +436,9 @@ class vector {
 		pos->~T();
 		--end_;
 
-		T* it = const_cast<T*>(pos);
+		iterator it = const_cast<iterator>(pos);
 		if constexpr (::jpl::trivially_relocatable<T>) {
-			::std::memmove(it, it + 1, (end_ - it) * sizeof(T));
+			::memmove(it, it + 1, (end_ - it) * sizeof(T));
 		} else {
 			while (it != end_) {
 				*it = static_cast<T&&>(*(it + 1));
@@ -427,18 +447,19 @@ class vector {
 			end_->~T();
 		}
 
-		return const_cast<T*>(pos);
+		return const_cast<iterator>(pos);
 	}
 
 	constexpr iterator erase(const_iterator first, const_iterator last) {
-		assert(first >= beg_ && last < end_);
+		assert(first >= beg_ && last <= end_);
+		if (first == last) return const_cast<iterator>(last);
 		dtor_range(const_cast<T*>(first), const_cast<T*>(last));
 		const ::ptrdiff_t dist = last - first;
 		end_ -= dist;
 
-		T* it = const_cast<T*>(first);
+		iterator it = const_cast<iterator>(first);
 		if constexpr (::jpl::trivially_relocatable<T>) {
-			::std::memmove(it, it + dist, (end_ - last + dist) * sizeof(T));
+			::memmove(it, it + dist, (end_ - last + dist) * sizeof(T));
 		} else {
 			while (it != end_) {
 				*it = static_cast<T&&>(*(it + dist));
@@ -448,7 +469,7 @@ class vector {
 				(it++)->~T();
 		}
 
-		return const_cast<T*>(first);
+		return const_cast<iterator>(first);
 	}
 
 	void reserve(size_type new_size) {
@@ -457,27 +478,27 @@ class vector {
 	}
 
 	void reserve(sic_t, size_type new_capacity) {
-		::size_t size_ = size();
+		const ::size_t size_ = size();
 		assert(new_capacity >= size_ && "jpl::vector trying to reserve capacity that doesn't fit data");
 		if constexpr (::jpl::trivially_relocatable<T>) {
 			if (is_sbo_active()) {
-				T* new_buffer{ static_cast<T*>(alloc.allocate(new_capacity * sizeof(T))) };
+				T* new_buffer{ alloc.allocate(new_capacity) };
 				::memcpy(new_buffer, beg_, size_ * sizeof(T));
 				beg_ = new_buffer;
 			}	else {
 				// beg_ could be nullptr, but then realloc works like malloc
-				beg_ = static_cast<T*>(alloc.reallocate(beg_, new_capacity * sizeof(T), capacity() * sizeof(T)));
+				beg_ = alloc.reallocate(beg_, new_capacity, capacity());
 			}
 			end_ = beg_ + size_;
 		} else {
-			T* new_buffer{ static_cast<T*>(alloc.allocate(new_capacity * sizeof(T))) };
+			T* new_buffer{ alloc.allocate(new_capacity) };
 			T* old_end{ end_ };
 			end_ = new_buffer;
-			for (iterator it{ beg_ }; it != old_end; it++) {
+			for (iterator it{ beg_ }; it != old_end; ++it) {
 				::new (end_++) T{ static_cast<T&&>(*it) };
-				(it)->~T();
+				it->~T();
 			}
-			if (!is_sbo_active()) alloc.deallocate(beg_, capacity() * sizeof(T));
+			if (!is_sbo_active()) alloc.deallocate(beg_, capacity());
 			beg_ = new_buffer;
 		}
 		data_.end_ = beg_ + new_capacity;
@@ -485,29 +506,40 @@ class vector {
 
 	vector& shrink_to_fit() {
 		if (!is_sbo_active() && (end_ != data_.end_)) [[likely]] {
-			::size_t size_ = size();
+			const ::size_t size_ = size();
 			if (size_ == 0) {
-				alloc.deallocate(beg_, capacity() * sizeof(T));
+				alloc.deallocate(beg_, capacity());
 				if constexpr (sbo_size == 0) {
 					beg_ = nullptr;
 					end_ = nullptr;
 					data_.end_ = nullptr;
 				} else {
-					beg_ = ::std::addressof(data_.sbo_[0]);
-					end_ = beg_;
+					end_ = beg_ = ::std::addressof(data_.sbo_[0]);
 				}
 			} else {
-				T* new_beg = allocate(size_);
+				T* new_beg;
 				if constexpr (::jpl::trivially_relocatable<T>) {
-					::memcpy(new_beg, beg_, size_ * sizeof(T));
+					if constexpr (sbo_size > 0) {
+						if (sbo_size >= size_) {
+							new_beg = &data_.sbo_[0];
+							::memcpy(new_beg, beg_, size_ * sizeof(T));
+							alloc.deallocate(beg_, capacity());
+						} else {
+							new_beg = alloc.reallocate(beg_, size_, capacity());
+						}
+					} else {
+						new_beg = alloc.reallocate(beg_, size_, capacity());
+					}
 				} else {
-					T* it = new_beg + size_;
-					while (it != new_beg) {
-						new (--it) T{ static_cast<T&&>(*--end_) };
+					new_beg = allocate(size_);
+					T* it = new_beg;
+					T* src = beg_;
+					while (it != new_beg + size_) {
+						new (it++) T{ static_cast<T&&>(*src++) };
 						end_->~T();
 					}
+					alloc.deallocate(beg_, capacity());
 				}
-				alloc.deallocate(beg_, capacity() * sizeof(T));
 				beg_ = new_beg;
 				end_ = beg_ + size_;
 				if (!is_sbo_active()) data_.end_ = end_;
@@ -525,13 +557,15 @@ class vector {
 		return *this;
 	}
 
+	// REFACTOR CHECKPOINT
+
 	template<class U>
 	iterator insert_impl(iterator pos, U&& value) {
 		/*
 			TODO: create a specialized version of grow_if_full that doesn't use reserve,
 			because currently some elements are moved twice when vector grows.
 		*/
-		auto dif = pos - beg_;
+		const ::ptrdiff_t dif = pos - beg_;
 		grow_if_full();
 		::new (end_) T{ static_cast<T&&>(*(end_ - 1)) };
 
@@ -567,6 +601,7 @@ class vector {
 		return *end_++;
 	}
 
+	// TODO: this does not have strong exception guarantee
 	vector& append(iterator begin, iterator end) {
 		grow_if_full(end - begin);
 		while (begin != end)
@@ -588,41 +623,6 @@ class vector {
 			return append(rng.begin(), rng.end());
 		else
 			return append(rng.cbegin(), rng.cend());
-	}
-
-	template<class U> requires (convertible_range<U, value_type> || can_add<value_type, U>)
-	friend auto operator+(const vector& left, U&& right) {
-		if constexpr (convertible_range<U, value_type>) {
-			vector<value_type, 0> res{ ::jpl::capacity, left.size() + right.size() };
-			res += left;
-			return res += right;
-		} else {
-			vector res{ left };
-			return res += right;
-		}
-	}
-
-	template<class U> requires (convertible_range<U, value_type> || can_add<U, value_type>)
-	vector& operator+=(U&& value) {
-		if constexpr (convertible_range<U, value_type>) {
-			return append(static_cast<U&&>(value));
-		} else {
-			for (size_type i{ 0 }; i < size(); ++i)
-				beg_[i] += value;
-			return *this;
-		}
-	}
-
-	template<class U> requires (can_reduce<value_type, U>)
-	friend vector operator-(vector left, U&& right) {
-		return left -= right;
-	}
-
-	template<class U> requires (can_reduce<value_type, U>)
-	vector& operator-=(U&& value) {
-		for (size_type i{ 0 }; i < size(); ++i)
-			beg_[i] -= value;
-		return *this;
 	}
 
 	void pop_back() {
@@ -766,13 +766,21 @@ class vector {
 			while (begin != end) (--end)->~T();
 	}
 
+	// This method is called when the ctor of an element throws during the vector's ctor
+	void unwind_ctor() {
+		end_--; // skip over the last element, which threw from its ctor
+		while (end_ != beg_)
+			(--end_)->~T();
+		alloc.deallocate(beg_, capacity());
+	}
+
 	[[gnu::always_inline]]
 	T* allocate(typename ::size_t n) {
 		if constexpr (sbo_size == 0) {
-			return static_cast<T*>(alloc.allocate(n * sizeof(T)));
+			return alloc.allocate(n);
 		} else {
 			if (n > sbo_size)
-				return static_cast<T*>(alloc.allocate(n * sizeof(T)));
+				return alloc.allocate(n);
 			else
 				return ::std::addressof(data_.sbo_[0]);
 		}
@@ -785,7 +793,7 @@ class vector {
 
 	[[gnu::always_inline]]
 	void grow_if_full() {
-		if (data_end() == end_) reserve(sic, size() ? size() * 2 : 1);
+		if (data_end() == end_) reserve(::jpl::sic, size() ? size() * 2 : 1);
 	}
 
 	[[gnu::always_inline]]
@@ -798,10 +806,24 @@ class vector {
 		const size_type old_dbl{ size() * 2 };
 		reserve(::jpl::sic, new_req > old_dbl ? new_req : old_dbl);
 	}
+
+	template<class value_type, ::size_t sbo_size>
+	union vector_union {
+		constexpr vector_union() noexcept {}
+		constexpr ~vector_union() noexcept {}
+		value_type sbo_[sbo_size];
+		value_type* end_;
+	};
+	template<class value_type>
+	union vector_union<value_type, 0> {
+		constexpr vector_union() noexcept {}
+		constexpr ~vector_union() noexcept {}
+		value_type* end_;
+	};
 	
 	T* beg_;
 	T* end_;
-	detail::vector_union<value_type, sbo_size> data_;
+	vector_union<value_type, sbo_size> data_;
 	[[no_unique_address]] A alloc;
 };
 
