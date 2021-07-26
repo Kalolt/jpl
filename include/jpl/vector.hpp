@@ -557,8 +557,6 @@ class vector {
 		return *this;
 	}
 
-	// REFACTOR CHECKPOINT
-
 	template<class U>
 	iterator insert_impl(iterator pos, U&& value) {
 		/*
