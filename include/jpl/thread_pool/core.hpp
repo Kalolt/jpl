@@ -3,7 +3,6 @@
 
 #include <bits/stdint-uintn.h>
 #include <cstdint>
-#include <jpl/bits/memory_pool.hpp>
 #include <jpl/bits/file_data.hpp>
 #include <jpl/vector.hpp>
 #include <jpl/function.hpp>
