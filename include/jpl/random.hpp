@@ -5,27 +5,23 @@
 
 #include <stdint.h>
 #include <immintrin.h>
-#ifdef __linux__
-#include <x86intrin.h>
-#else
-#include <intrin.h>
-#endif
 
 namespace jpl {
 
 // Try to generate true random seed with RDSEED. If that fails 1000 times, fall back to RDTSC timestamp.
+// https://software.intel.com/content/www/us/en/develop/articles/intel-digital-random-number-generator-drng-software-implementation-guide.html
 inline ::uint64_t gen_seed() noexcept {
 	unsigned long long seed;
 	for (int i = 0; i != 1'000; ++i) {
-		if (_rdseed64_step(&seed)) [[likely]]
+		if (::_rdseed64_step(&seed)) [[likely]]
 			return seed;
-		_mm_pause();
+		::_mm_pause();
 	}
-	return __rdtsc();
+	return ::__rdtsc();
 }
 
-// This is equivalent to pcg32 from https://github.com/imneme/pcg-cpp
-// without all the extra compile time bloat
+// This is equivalent to pcg32 from https://github.com/imneme/pcg-cpp without all the extra compile time bloat,
+// and with the addition of custom seed generator
 class pcg32 {
 	::uint64_t state;
 	static constexpr ::uint64_t inc { 1442695040888963407ull };
@@ -56,7 +52,7 @@ class pcg32 {
 };
 
 // From Squirrel Eiserloh's GDC 2017 talk "Math for Game Programmers: Noise-Based RNG"
-inline constexpr ::uint32_t squirrel3(const ::int32_t position, const ::uint32_t seed = 0) noexcept {
+inline constexpr ::uint32_t squirrel3(const ::uint32_t position, const ::uint32_t seed = 0) noexcept {
 	::uint32_t mangled = position;
 	mangled *= 0xB5297A4Du;
 	mangled += seed;
@@ -68,7 +64,7 @@ inline constexpr ::uint32_t squirrel3(const ::int32_t position, const ::uint32_t
 	return mangled;
 }
 
-inline constexpr ::uint32_t noise2d(::int32_t x, ::int32_t y, ::uint32_t seed = 0) noexcept {
+inline constexpr ::uint32_t noise2d(::uint32_t x, ::uint32_t y, ::uint32_t seed = 0) noexcept {
 	return squirrel3(x + 198491317u * y, seed);
 }
 
