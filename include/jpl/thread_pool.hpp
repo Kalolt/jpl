@@ -82,8 +82,9 @@ void process_timed();
 #ifdef JPL_HEADER_ONLY
 #ifndef JPL_THREAD_POOL_IMPL
 #define JPL_THREAD_POOL_IMPL
-#include <jpl/src/thread_pool_v2/core.cpp>
+#include <jpl/src/thread_pool/core.cpp>
 #endif
 #endif
 
 #endif // JPL_THREAD_POOL_CORE_HPP
+
