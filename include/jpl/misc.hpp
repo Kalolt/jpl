@@ -1,8 +1,9 @@
 #ifndef JPL_MISC_HPP
 #define JPL_MISC_HPP
 
-#include <jpl/vector.hpp>
+#include <jpl/concepts.hpp>
 
+#include <cassert>
 #include <type_traits>
 #include <array>
 #include <string>
