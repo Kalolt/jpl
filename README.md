@@ -11,12 +11,13 @@ The library uses cutting-edge C++20 features as soon as all 3 major compilers su
 
 API stability is not guaranteed for now.
 
-Documentation (incomplete):
+Disclaimer: most of the .hpp files sacrifice readability for better compile times, by not including heavy STL headers such as <algorithm>.
+
+Documentation:
++ [jpl::concurrent_queue](https://github.com/JPylkkanen/jpl/blob/master/documentation/concurrent_queue.md)
 + [jpl::vector](https://github.com/JPylkkanen/jpl/blob/master/documentation/vector.md)
 + [jpl::function](https://github.com/JPylkkanen/jpl/blob/master/documentation/function.md)
 + [jpl_defer](https://github.com/JPylkkanen/jpl/blob/master/documentation/defer.md)
 
 Third party dependencies:
-+ archive.hpp - [libarchive](https://github.com/libarchive/libarchive), [libdeflate](https://github.com/ebiggers/libdeflate), [frozen](https://github.com/serge-sans-paille/frozen)
-+ thread_pool.hpp - [Boost.Context](https://github.com/boostorg/context), [liburing](https://github.com/axboe/liburing)
 + Unit tests - [doctest](https://github.com/onqtam/doctest)
